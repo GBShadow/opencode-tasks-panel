@@ -1,0 +1,12 @@
+{
+  "name": "opencode-tasks-panel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Task list panel for the OpenCode v2 sidebar: a `tasks` tool the agent calls, plus a live, nestable todo list rendered in the TUI.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.tsx"
+  }
+}

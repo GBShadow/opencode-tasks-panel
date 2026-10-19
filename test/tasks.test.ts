@@ -1,8 +1,16 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { flattenTasks, normalizeTasks, summarizeTasks, tasksForSession } from "../src/tasks.ts"
+import {
+  clearTasks,
+  flattenTasks,
+  isFinished,
+  normalizeTasks,
+  staleSubagentLists,
+  summarizeTasks,
+  tasksForSession,
+} from "../src/tasks.ts"
 
 describe("normalizeTasks", () => {
   test("keeps a well-formed list untouched", () => {
@@ -114,6 +122,73 @@ describe("summarizeTasks", () => {
   test("reports an empty list", () => {
     expect(summarizeTasks([])).toBe("Task list cleared.")
   })
+
+  test("mentions the subagent lists that were cleared", () => {
+    const tasks = normalizeTasks([{ id: "A", status: "done", summary: "a" }])
+    expect(summarizeTasks(tasks, 1)).toBe("1 task(s): 1 done. 1 subagent list was cleared.")
+    expect(summarizeTasks(tasks, 2)).toBe("1 task(s): 1 done. 2 subagent lists were cleared.")
+  })
+
+  test("mentions the cleared lists even when the list is empty", () => {
+    expect(summarizeTasks([], 1)).toBe("Task list cleared. 1 subagent list was cleared.")
+  })
+})
+
+describe("isFinished", () => {
+  test("is true only when every entry is terminal", () => {
+    expect(
+      isFinished(
+        normalizeTasks([
+          { id: "A", status: "done", summary: "a" },
+          { id: "B", status: "cancelled", summary: "b" },
+        ]),
+      ),
+    ).toBe(true)
+  })
+
+  test("is false while an entry can still change", () => {
+    expect(
+      isFinished(
+        normalizeTasks([
+          { id: "A", status: "done", summary: "a" },
+          { id: "B", status: "in_progress", summary: "b" },
+        ]),
+      ),
+    ).toBe(false)
+    expect(isFinished(normalizeTasks([{ id: "A", status: "pending", summary: "a" }]))).toBe(false)
+    expect(isFinished(normalizeTasks([{ id: "A", status: "blocked", summary: "a" }]))).toBe(false)
+  })
+
+  test("an empty list is not finished", () => {
+    expect(isFinished([])).toBe(false)
+  })
+})
+
+describe("staleSubagentLists", () => {
+  const bySession = {
+    done: normalizeTasks([{ id: "A", status: "done", summary: "a" }]),
+    cancelled: normalizeTasks([{ id: "A", status: "cancelled", summary: "a" }]),
+    running: normalizeTasks([{ id: "A", status: "in_progress", summary: "a" }]),
+    pending: normalizeTasks([{ id: "A", status: "pending", summary: "a" }]),
+  }
+
+  test("clears the descendants that already finished", () => {
+    const stale = staleSubagentLists(bySession, ["done", "cancelled", "running", "pending"])
+    expect(stale).toEqual(["done", "cancelled"])
+  })
+
+  test("keeps a subagent that is still working", () => {
+    expect(staleSubagentLists(bySession, ["running", "pending"])).toEqual([])
+  })
+
+  test("a descendant with no list has nothing to clear", () => {
+    expect(staleSubagentLists(bySession, ["missing"])).toEqual([])
+  })
+
+  test("a new plan clears every descendant that has a list", () => {
+    const stale = staleSubagentLists(bySession, ["done", "running", "missing"], true)
+    expect(stale).toEqual(["done", "running"])
+  })
 })
 
 describe("on-disk round trip", () => {
@@ -153,6 +228,40 @@ describe("on-disk round trip", () => {
       const all = readAllTasks()
       expect(all.ses_broken).toBeUndefined()
       expect(all.ses_ok).toHaveLength(1)
+    } finally {
+      if (previous === undefined) delete process.env.XDG_STATE_HOME
+      else process.env.XDG_STATE_HOME = previous
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("clearing a session removes its list and leaves the others alone", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tasks-panel-test-"))
+    const previous = process.env.XDG_STATE_HOME
+    process.env.XDG_STATE_HOME = dir
+    try {
+      const { saveTasks, readAllTasks, tasksFile } = require("../src/tasks.ts")
+      saveTasks("ses_sub", normalizeTasks([{ id: "S1", status: "done", summary: "sub" }]))
+      saveTasks("ses_main", normalizeTasks([{ id: "T1", status: "pending", summary: "main" }]))
+
+      clearTasks("ses_sub")
+
+      expect(readAllTasks().ses_sub).toBeUndefined()
+      expect(readAllTasks().ses_main).toHaveLength(1)
+      expect(existsSync(tasksFile("ses_sub"))).toBe(false)
+    } finally {
+      if (previous === undefined) delete process.env.XDG_STATE_HOME
+      else process.env.XDG_STATE_HOME = previous
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("clearing a session with no list is a no-op", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tasks-panel-test-"))
+    const previous = process.env.XDG_STATE_HOME
+    process.env.XDG_STATE_HOME = dir
+    try {
+      expect(() => clearTasks("ses_missing")).not.toThrow()
     } finally {
       if (previous === undefined) delete process.env.XDG_STATE_HOME
       else process.env.XDG_STATE_HOME = previous

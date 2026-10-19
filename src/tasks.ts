@@ -8,7 +8,7 @@
  * format, and the pure functions stay unit-testable without booting a runtime.
  */
 
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -141,6 +141,59 @@ export function saveTasks(sessionID: string, tasks: readonly Task[]): void {
 }
 
 /**
+ * Remove a session's stored task list.
+ *
+ * The list is disposable panel state, not user data: the transcript keeps the
+ * real history. A session with no file reads as having no tasks.
+ */
+export function clearTasks(sessionID: string): void {
+  try {
+    rmSync(tasksFile(sessionID), { force: true })
+  } catch {
+    // "Not there" is the wanted end state, so a failure to unlink is not an
+    // error the caller has to handle.
+  }
+}
+
+/** Statuses a task can no longer leave. */
+const TERMINAL_STATUSES: readonly TaskStatus[] = ["done", "cancelled"]
+
+/**
+ * Whether a task list is finished: it has entries and none of them can still
+ * change.
+ *
+ * A subagent that completed its work leaves a list where every entry is
+ * terminal. That list is history — once the parent session moves on, it must
+ * not keep sitting in the panel next to the parent's current plan.
+ */
+export function isFinished(tasks: readonly Task[]): boolean {
+  if (tasks.length === 0) return false
+  return tasks.every((task) => TERMINAL_STATUSES.includes(task.status))
+}
+
+/**
+ * The subagent lists that must go when a session writes its own list.
+ *
+ * A session's list is replaced on every call, so a write is also the moment
+ * the parent declares "this is where the work stands now". Two cases:
+ *
+ * - `newPlan` — the parent is starting a different phase, so every
+ *   descendant list is stale, including the ones still unfinished.
+ * - otherwise — only the descendants that already finished are stale. A
+ *   subagent that is still working keeps its list.
+ *
+ * A descendant with no list at all is never stale: there is nothing to clear.
+ */
+export function staleSubagentLists(
+  bySession: Record<string, readonly Task[]>,
+  descendants: readonly string[],
+  newPlan = false,
+): string[] {
+  if (newPlan) return descendants.filter((id) => (bySession[id] ?? []).length > 0)
+  return descendants.filter((id) => isFinished(bySession[id] ?? []))
+}
+
+/**
  * Select the rows to render for one session.
  *
  * The sidebar shows exactly the current session's list: a session with no
@@ -158,10 +211,13 @@ const SUMMARY_ORDER: readonly TaskStatus[] = ["done", "in_progress", "blocked", 
  *
  * The `tasks` tool deliberately declares no structured `output` schema, so this
  * string is what the model reads back. Only statuses that actually occur are
- * mentioned.
+ * mentioned. `cleared` counts the subagent lists that were dropped, so the
+ * model learns that the panel changed shape.
  */
-export function summarizeTasks(tasks: readonly Task[]): string {
-  if (tasks.length === 0) return "Task list cleared."
+export function summarizeTasks(tasks: readonly Task[], cleared = 0): string {
+  if (tasks.length === 0) {
+    return cleared > 0 ? `Task list cleared. ${clearedSubagentLists(cleared)}` : "Task list cleared."
+  }
 
   const counts = new Map<TaskStatus, number>()
   for (const task of tasks) counts.set(task.status, (counts.get(task.status) ?? 0) + 1)
@@ -169,7 +225,13 @@ export function summarizeTasks(tasks: readonly Task[]): string {
   const parts = SUMMARY_ORDER.filter((status) => counts.has(status)).map(
     (status) => `${counts.get(status)} ${status.replace("_", " ")}`,
   )
-  return `${tasks.length} task(s): ${parts.join(", ")}.`
+  const suffix = cleared > 0 ? ` ${clearedSubagentLists(cleared)}` : ""
+  return `${tasks.length} task(s): ${parts.join(", ")}.${suffix}`
+}
+
+/** "1 subagent list was cleared." / "2 subagent lists were cleared." */
+function clearedSubagentLists(count: number): string {
+  return count === 1 ? "1 subagent list was cleared." : `${count} subagent lists were cleared.`
 }
 
 /**

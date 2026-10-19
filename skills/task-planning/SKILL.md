@@ -38,6 +38,11 @@ an empty panel is cheaper than a noisy one.
    parent's completion is a top-level item.
 6. **Re-plan when the plan changes.** If new work appears, insert the new
    items and send the whole list again.
+7. **A new phase starts a new list.** When the work moves to a different
+   phase, send a fresh list and set `new_plan: true` on that one call. It
+   clears the task lists of your subagents, so the panel shows the current
+   phase only. Subagent lists that already finished are cleared on their own,
+   without the flag.
 
 ## Example
 
@@ -48,6 +53,17 @@ an empty panel is cheaper than a noisy one.
     { "id": "T1.1", "parent_id": "T1", "status": "done", "summary": "Locate the session store" },
     { "id": "T1.2", "parent_id": "T1", "status": "pending", "summary": "Trace the refresh path" },
     { "id": "T2", "status": "blocked", "summary": "Needs the staging credentials" }
+  ]
+}
+```
+
+## Example — starting a new phase
+
+```json
+{
+  "new_plan": true,
+  "tasks": [
+    { "id": "T1", "status": "in_progress", "summary": "Ship the migration" }
   ]
 }
 ```

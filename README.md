@@ -101,6 +101,7 @@ previous one, so the model never has to diff, patch, or delete entries.
 | `tasks[].status` | string | yes | `pending`, `in_progress`, `blocked`, `done`, `cancelled`. |
 | `tasks[].summary` | string | yes | One-line description. |
 | `tasks[].parent_id` | string | no | Parent id, for nesting. |
+| `new_plan` | boolean | no | This list starts a new phase: every subagent list is cleared, unfinished ones included. |
 
 ### Status markers
 
@@ -136,6 +137,31 @@ comes from `context.data.session.family()`, and a session counts as a
 subagent when its `parentID` chain leads back to the current session — so
 nested subagents are grouped at their own depth.
 
+### When a subagent list is cleared
+
+A subagent's list belongs to the work it did, not to the panel forever. The
+session tree never forgets a child, so without an explicit rule a finished
+subagent's checklist would sit next to the parent's current plan for the rest
+of the session.
+
+Every `tasks` call replaces the session's own list, and that is also the
+moment the parent declares where the work stands. So:
+
+- A subagent list where **every entry is terminal** (`done` or `cancelled`) is
+  history: it is cleared as soon as the parent writes its list again.
+- A subagent that is **still working** keeps its list.
+- `new_plan: true` clears **every** subagent list, unfinished ones included.
+  Use it on the single call that starts a different phase of work.
+
+The clearing happens in the server, on the session tree resolved with
+`session.get`: the parent of every session that keeps a list is read, and the
+chain of parents is walked up to the session that wrote the list. The TUI only
+reads the files it finds, so a cleared list simply stops being rendered.
+
+OpenCode 2.0.32 does not expose `session.list` to plugins, so the tree is
+resolved from the sessions that actually have a list — which is the set the
+panel can show anyway.
+
 ## Development
 
 ```sh
@@ -161,6 +187,11 @@ What this version changes:
   reactive update reaching the host's renderer.
 - **Subagent task lists.** `showSubagentTasks` aggregates the lists the
   subagents keep, grouped under the agent that owns them.
+- **A finished subagent list does not outlive its phase.** A subagent list
+  where every entry is terminal is cleared when the parent writes its list
+  again, and `new_plan` clears every subagent list at once. The session tree
+  never forgets a child, so without this rule the old checklist would sit next
+  to the parent's current plan for the rest of the session.
 - **A configuration file** that is re-read on every tick, so behaviour changes
   without restarting OpenCode.
 - **Resilient lookups.** The configuration is searched in both the XDG and the
